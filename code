@@ -2,7 +2,7 @@ import os
 import sys
 import requests
 import uuid
-#checking
+
 sys.path.append("..")
 from callback_logging import log_query_to_model, log_model_response
 from dotenv import load_dotenv
@@ -13,6 +13,88 @@ from google.adk.tools.tool_context import ToolContext
 
 load_dotenv()
 model_name = os.getenv("MODEL")
+
+import json
+from typing import Dict, Any
+
+def parse_bank_transactions_rpc_output(rpc_output: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parses the JSON-RPC output containing bank transactions into a structured dict.
+    """
+    if not rpc_output or "result" not in rpc_output:
+        raise ValueError("Invalid RPC output: 'result' field missing")
+
+    content_list = rpc_output["result"].get("content")
+    if not content_list or len(content_list) == 0:
+        raise ValueError("RPC output content list is empty")
+
+    content_text = content_list[0].get("text")
+    if not content_text:
+        raise ValueError("Missing 'text' field in content")
+
+    data = json.loads(content_text)
+
+    schema = data.get("schemaDescription", "")
+    raw_bank_txns = data.get("bankTransactions", [])
+
+    txn_fields = [
+        "transactionAmount",
+        "transactionNarration",
+        "transactionDate",
+        "transactionType",
+        "transactionMode",
+        "currentBalance"
+    ]
+
+    parsed_bank_transactions = []
+
+    for bank_record in raw_bank_txns:
+        bank_name = bank_record.get("bank", "Unknown Bank")
+        txns = bank_record.get("txns", [])
+
+        parsed_txns = []
+        for txn_arr in txns:
+            if len(txn_arr) != len(txn_fields):
+                continue
+
+            parsed_txn = dict(zip(txn_fields, txn_arr))
+
+            try:
+                parsed_txn["transactionAmount"] = float(parsed_txn["transactionAmount"])
+            except (ValueError, TypeError):
+                pass
+            try:
+                parsed_txn["currentBalance"] = float(parsed_txn["currentBalance"])
+            except (ValueError, TypeError):
+                pass
+
+            txn_type_map = {
+                1: "CREDIT",
+                2: "DEBIT",
+                3: "OPENING",
+                4: "INTEREST",
+                5: "TDS",
+                6: "INSTALLMENT",
+                7: "CLOSING",
+                8: "OTHERS"
+            }
+            try:
+                txn_type_int = int(parsed_txn["transactionType"])
+                parsed_txn["transactionType"] = txn_type_map.get(txn_type_int, "UNKNOWN")
+            except (ValueError, TypeError):
+                parsed_txn["transactionType"] = "UNKNOWN"
+
+            parsed_txns.append(parsed_txn)
+
+        parsed_bank_transactions.append({
+            "bank": bank_name,
+            "transactions": parsed_txns
+        })
+
+    return {
+        "schemaDescription": schema,
+        "bankTransactions": parsed_bank_transactions
+    }
 
 # --- Core Tool: The MCP Client ---
 # This single, powerful tool is the bridge to the entire Fi MCP server.
@@ -25,8 +107,7 @@ def call_mcp_tool(
     Acts as a client to call a tool on the remote MCP service.
 
     Args:
-        tool_name (str): The name of the tool to call on the remote service
-                         (e.g., 'login', 'fetch_bank_transactions').
+        tool_name (str): The name of the tool to call on the remote service.
         arguments (dict): The arguments to pass to the remote tool.
 
     Returns:
@@ -34,32 +115,52 @@ def call_mcp_tool(
     """
     url = "http://localhost:8080/mcp/stream"
     
-   
+    mcp_session_id = tool_context.state.get(
+        "mcp_session_id", 
+        "mcp-session-594e48ea-fea1-40ef-8c52-7552dd9272af"
+    )
     
     headers = {
-            "Content-Type": "application/json",
-            "Mcp-Session-Id": "mcp-session-594e48ea-fea1-40ef-8c52-7552dd9272af"
-        }
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": mcp_session_id
+    }
 
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
-        "params": {"name": tool_name, "arguments": arguments}
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
     }
 
     try:
         print(f"--- Calling MCP client for remote tool: {tool_name} with args {arguments} ---")
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        
-        # After a successful login, save the new session ID to the state.
+
+        result = response.json()
+
+        # Update session ID after login if provided
         if tool_name == "login" and response.status_code == 200:
-            result = response.json()
             if "result" in result and "mcp_session_id" in result["result"]:
                 tool_context.state["mcp_session_id"] = result["result"]["mcp_session_id"]
-        
-        return response.json()
+
+        # Add parsing or special handling for new tool responses here if needed
+
+        # Example: If fetching bank transactions, parse output and return structured data
+        if tool_name == "fetch_bank_transactions" and "result" in result:
+            try:
+                parsed_data = parse_bank_transactions_rpc_output(result)
+                return {"parsedData": parsed_data}
+            except Exception as e:
+                print(f"Error parsing bank transactions: {e}")
+                return result
+
+        # For other tools, just return the raw JSON response
+        return result
+
     except requests.exceptions.RequestException as e:
         print(f"Error calling MCP client: {e}")
         return {"error": "Could not connect to the MCP service.", "details": str(e)}
@@ -106,8 +207,57 @@ investment_advisor_agent = Agent(
         """,
 )
 
+# Existing imports and code remain unchanged...
+# ...
 
-# --- Root Agent: The Financial Advisor ---
+# --- Additional Specialist Sub-Agents ---
+
+net_worth_agent = Agent(
+    name="net_worth_agent",
+    model=model_name,
+    description="Fetches user's net worth details from the MCP service.",
+    instruction="""
+        You only fetch raw net worth data using the 'fetch_net_worth' tool.
+        Do not analyze or interpret this data, just return it as is.
+    """,
+    tools=[call_mcp_tool]
+)
+
+credit_report_agent = Agent(
+    name="credit_report_agent",
+    model=model_name,
+    description="Fetches user's credit report data from the MCP service.",
+    instruction="""
+        You only fetch raw credit report data using the 'fetch_credit_report' tool.
+        Do not analyze or interpret this data, just return it as is.
+    """,
+    tools=[call_mcp_tool]
+)
+
+epf_details_agent = Agent(
+    name="epf_details_agent",
+    model=model_name,
+    description="Fetches user's Employee Provident Fund (EPF) details from the MCP service.",
+    instruction="""
+        You only fetch raw EPF details using the 'fetch_epf_details' tool.
+        Do not analyze or interpret this data, just return it as is.
+    """,
+    tools=[call_mcp_tool]
+)
+
+mf_transactions_agent = Agent(
+    name="mf_transactions_agent",
+    model=model_name,
+    description="Fetches user's mutual fund transaction data from the MCP service.",
+    instruction="""
+        You only fetch raw mutual fund transactions using the 'fetch_mf_transactions' tool.
+        Do not analyze or interpret this data, just return it as is.
+    """,
+    tools=[call_mcp_tool]
+)
+
+
+# --- Modify the root_agent to include the new sub-agents ---
 
 root_agent = Agent(
     name="financial_advisor",
@@ -115,23 +265,38 @@ root_agent = Agent(
     description="The main financial advisor that interacts with the user and delegates tasks.",
     instruction="""
         You are a friendly and professional AI Personal Financial Advisor.
-        
+
         1. **Login:** Start by asking the user for their 10-digit phone number to log in.
            Use the 'data_analyst' agent to call the 'login' tool with the phone number.
            The 'data_analyst' will automatically handle saving the session ID.
            Confirm to the user that they are logged in.
 
         2. **Understand Goal:** Ask the user what they'd like to do (e.g., "analyze my spending,"
-           "check my net worth," "get investment advice").
+           "check my net worth," "get investment advice", "get my credit report", "fetch my EPF details", 
+           "show my mutual fund transactions").
 
         3. **Delegate Tasks:**
-           - To get any data, ALWAYS delegate to the 'data_analyst' agent first.
-           - For spending analysis, give the data from the 'data_analyst' to the 'financial_insights_agent'.
-           - For investment advice, give the data from the 'data_analyst' to the 'investment_advisor_agent'.
-           - Present the final analysis from the specialist agents to the user.
-        """,
+           - To get any data, ALWAYS delegate to the appropriate data fetching agent first.
+           - Use 'data_analyst' for raw financial transactional data. 
+           - Use 'net_worth_agent' for net worth data.
+           - Use 'credit_report_agent' for credit report.
+           - Use 'epf_details_agent' for EPF details.
+           - Use 'mf_transactions_agent' for mutual fund transactions.
+           - For spending analysis, give the data from 'data_analyst' to the 'financial_insights_agent'.
+           - For investment advice, give the data from 'data_analyst' or 'mf_transactions_agent' to the 'investment_advisor_agent'.
+           - For credit report, EPF, and net worth, you may summarize or pass data back directly or use additional specialists if needed.
+           - Present the final analysis or data from the specialist agents to the user.
+    """,
     generate_content_config=types.GenerateContentConfig(
         temperature=0,
     ),
-    sub_agents=[data_analyst_agent, financial_insights_agent, investment_advisor_agent]
+    sub_agents=[
+        data_analyst_agent,
+        financial_insights_agent,
+        investment_advisor_agent,
+        net_worth_agent,
+        credit_report_agent,
+        epf_details_agent,
+        mf_transactions_agent
+    ]
 )

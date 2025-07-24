@@ -1,0 +1,116 @@
+import os
+import sys
+import requests
+import uuid  # Keep the import for use in the prompt templating
+
+sys.path.append("..")
+from callback_logging import log_query_to_model, log_model_response
+from dotenv import load_dotenv
+from google.adk import Agent
+from google.genai import types
+from typing import Optional, List, Dict
+from google.adk.tools.tool_context import ToolContext
+
+load_dotenv()
+model_name = os.getenv("MODEL")
+
+# Tools
+
+def call_mcp_tool(
+    tool_context: ToolContext,
+    tool_name: str,
+    arguments: dict
+) -> dict:
+    """
+    Acts as a client to call a tool on the remote MCP service.
+
+    Args:
+        tool_name (str): The name of the tool to call on the remote service.
+        arguments (dict): The arguments to pass to the remote tool.
+
+    Returns:
+        A dictionary containing the response from the remote service.
+    """
+    url = "http://localhost:8080/mcp/stream"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": "mcp-session-594e48ea-fea1-40ef-8c52-7552dd9272af"
+    }
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments}
+    }
+
+    try:
+        print(f"--- Calling MCP client for remote tool: {tool_name} ---")
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling MCP client: {e}")
+        return {"error": "Could not connect to the MCP service.", "details": str(e)}
+
+
+def save_attractions_to_state(
+    tool_context: ToolContext,
+    attractions: List[str]
+) -> dict[str, str]:
+    """Saves the list of attractions to state["attractions"]."""
+    existing_attractions = tool_context.state.get("attractions", [])
+    tool_context.state["attractions"] = existing_attractions + attractions
+    return {"status": "success"}
+
+
+# Agents
+
+attractions_planner = Agent(
+    name="attractions_planner",
+    model=model_name,
+    description="Build a list of attractions and provide financial details for a country.",
+    instruction="""
+        - Provide the user options for attractions to visit within their selected country.
+        - When they reply, use your 'save_attractions_to_state' tool to save their selection.
+        - If they ask to view the list, provide a bulleted list of {{ attractions? }}.
+        - If the user asks for financial details like bank transactions, you MUST use the
+        'call_mcp_tool' with tool_name='fetch_bank_transactions' and arguments={}.
+        """,
+    before_model_callback=log_query_to_model,
+    after_model_callback=log_model_response,
+    tools=[save_attractions_to_state, call_mcp_tool]
+)
+
+travel_brainstormer = Agent(
+    name="travel_brainstormer",
+    model=model_name,
+    description="Help a user decide what country to visit.",
+    instruction="""
+        Provide a few suggestions of popular countries for travelers.
+        Help a user identify their primary goals of travel.
+        Identify countries that would make great destinations based on their priorities.
+        """,
+    before_model_callback=log_query_to_model,
+    after_model_callback=log_model_response,
+)
+
+root_agent = Agent(
+    name="steering",
+    model=model_name,
+    description="Start a user on a travel adventure.",
+    instruction="""
+        At the very beginning of the conversation, set a unique mcp_session_id
+        in the state. A good value would be 'mcp-session-{{!uuid()}}'.
+        Then, ask the user if they know where they'd like to travel
+        or if they need some help deciding.
+        If they need help deciding, send them to 'travel_brainstormer'.
+        If they know what country they'd like to visit,
+        send them to the 'attractions_planner'.
+        """,
+    generate_content_config=types.GenerateContentConfig(
+        temperature=0,
+    ),
+    # --- FIX: The invalid 'built_in_tools' parameter has been removed ---
+    sub_agents=[travel_brainstormer, attractions_planner]
+)

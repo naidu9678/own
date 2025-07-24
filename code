@@ -1,7 +1,7 @@
 import os
 import sys
 import requests
-import uuid  # Keep the import for use in the prompt templating
+import uuid
 
 sys.path.append("..")
 from callback_logging import log_query_to_model, log_model_response
@@ -14,8 +14,8 @@ from google.adk.tools.tool_context import ToolContext
 load_dotenv()
 model_name = os.getenv("MODEL")
 
-# Tools
-
+# --- Core Tool: The MCP Client ---
+# This single, powerful tool is the bridge to the entire Fi MCP server.
 def call_mcp_tool(
     tool_context: ToolContext,
     tool_name: str,
@@ -25,7 +25,8 @@ def call_mcp_tool(
     Acts as a client to call a tool on the remote MCP service.
 
     Args:
-        tool_name (str): The name of the tool to call on the remote service.
+        tool_name (str): The name of the tool to call on the remote service
+                         (e.g., 'login', 'fetch_bank_transactions').
         arguments (dict): The arguments to pass to the remote tool.
 
     Returns:
@@ -33,10 +34,13 @@ def call_mcp_tool(
     """
     url = "http://localhost:8080/mcp/stream"
     
+   
+    
     headers = {
-        "Content-Type": "application/json",
-        "Mcp-Session-Id": "mcp-session-594e48ea-fea1-40ef-8c52-7552dd9272af"
-    }
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": "mcp-session-594e48ea-fea1-40ef-8c52-7552dd9272af"
+        }
+
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -45,72 +49,89 @@ def call_mcp_tool(
     }
 
     try:
-        print(f"--- Calling MCP client for remote tool: {tool_name} ---")
+        print(f"--- Calling MCP client for remote tool: {tool_name} with args {arguments} ---")
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
+        
+        # After a successful login, save the new session ID to the state.
+        if tool_name == "login" and response.status_code == 200:
+            result = response.json()
+            if "result" in result and "mcp_session_id" in result["result"]:
+                tool_context.state["mcp_session_id"] = result["result"]["mcp_session_id"]
+        
         return response.json()
     except requests.exceptions.RequestException as e:
         print(f"Error calling MCP client: {e}")
         return {"error": "Could not connect to the MCP service.", "details": str(e)}
 
+# --- Specialist Sub-Agents ---
 
-def save_attractions_to_state(
-    tool_context: ToolContext,
-    attractions: List[str]
-) -> dict[str, str]:
-    """Saves the list of attractions to state["attractions"]."""
-    existing_attractions = tool_context.state.get("attractions", [])
-    tool_context.state["attractions"] = existing_attractions + attractions
-    return {"status": "success"}
-
-
-# Agents
-
-attractions_planner = Agent(
-    name="attractions_planner",
+data_analyst_agent = Agent(
+    name="data_analyst",
     model=model_name,
-    description="Build a list of attractions and provide financial details for a country.",
+    description="Fetches raw financial data from the MCP service. It does not interpret data.",
     instruction="""
-        - Provide the user options for attractions to visit within their selected country.
-        - When they reply, use your 'save_attractions_to_state' tool to save their selection.
-        - If they ask to view the list, provide a bulleted list of {{ attractions? }}.
-        - If the user asks for financial details like bank transactions, you MUST use the
-        'call_mcp_tool' with tool_name='fetch_bank_transactions' and arguments={}.
+        You are a data fetching agent. Your only job is to use the 'call_mcp_tool'
+        to get financial data from the MCP server. Do not analyze or comment on the data,
+        simply return the raw results from the tool call.
         """,
-    before_model_callback=log_query_to_model,
-    after_model_callback=log_model_response,
-    tools=[save_attractions_to_state, call_mcp_tool]
+    tools=[call_mcp_tool]
 )
 
-travel_brainstormer = Agent(
-    name="travel_brainstormer",
+financial_insights_agent = Agent(
+    name="financial_insights_agent",
     model=model_name,
-    description="Help a user decide what country to visit.",
+    description="Analyzes financial data to provide insights on spending and savings.",
     instruction="""
-        Provide a few suggestions of popular countries for travelers.
-        Help a user identify their primary goals of travel.
-        Identify countries that would make great destinations based on their priorities.
+        You are a financial analyst. You will be given raw financial data
+        (like bank transactions or net worth details). Your job is to:
+        1. Analyze the data to find meaningful patterns (e.g., high spending categories, savings rate).
+        2. Summarize the findings in a clear, easy-to-understand way.
+        3. Present these insights to the user.
+        You do not have tools to fetch data yourself.
         """,
-    before_model_callback=log_query_to_model,
-    after_model_callback=log_model_response,
 )
+
+investment_advisor_agent = Agent(
+    name="investment_advisor_agent",
+    model=model_name,
+    description="Provides investment advice based on a user's financial profile.",
+    instruction="""
+        You are an investment advisor. You will be given a user's financial profile,
+        including their net worth, existing investments, and savings habits. Your job is to:
+        1. Evaluate their current investment portfolio (e.g., asset allocation, performance).
+        2. Provide personalized, actionable investment suggestions based on their profile.
+        3. Explain the reasoning behind your suggestions.
+        You do not have access to real-time market data or tools to fetch data.
+        """,
+)
+
+
+# --- Root Agent: The Financial Advisor ---
 
 root_agent = Agent(
-    name="steering",
+    name="financial_advisor",
     model=model_name,
-    description="Start a user on a travel adventure.",
+    description="The main financial advisor that interacts with the user and delegates tasks.",
     instruction="""
-        At the very beginning of the conversation, set a unique mcp_session_id
-        in the state. A good value would be 'mcp-session-{{!uuid()}}'.
-        Then, ask the user if they know where they'd like to travel
-        or if they need some help deciding.
-        If they need help deciding, send them to 'travel_brainstormer'.
-        If they know what country they'd like to visit,
-        send them to the 'attractions_planner'.
+        You are a friendly and professional AI Personal Financial Advisor.
+        
+        1. **Login:** Start by asking the user for their 10-digit phone number to log in.
+           Use the 'data_analyst' agent to call the 'login' tool with the phone number.
+           The 'data_analyst' will automatically handle saving the session ID.
+           Confirm to the user that they are logged in.
+
+        2. **Understand Goal:** Ask the user what they'd like to do (e.g., "analyze my spending,"
+           "check my net worth," "get investment advice").
+
+        3. **Delegate Tasks:**
+           - To get any data, ALWAYS delegate to the 'data_analyst' agent first.
+           - For spending analysis, give the data from the 'data_analyst' to the 'financial_insights_agent'.
+           - For investment advice, give the data from the 'data_analyst' to the 'investment_advisor_agent'.
+           - Present the final analysis from the specialist agents to the user.
         """,
     generate_content_config=types.GenerateContentConfig(
         temperature=0,
     ),
-    # --- FIX: The invalid 'built_in_tools' parameter has been removed ---
-    sub_agents=[travel_brainstormer, attractions_planner]
+    sub_agents=[data_analyst_agent, financial_insights_agent, investment_advisor_agent]
 )

@@ -14,88 +14,6 @@ from google.adk.tools.tool_context import ToolContext
 load_dotenv()
 model_name = os.getenv("MODEL")
 
-import json
-from typing import Dict, Any
-
-def parse_bank_transactions_rpc_output(rpc_output: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parses the JSON-RPC output containing bank transactions into a structured dict.
-    """
-    if not rpc_output or "result" not in rpc_output:
-        raise ValueError("Invalid RPC output: 'result' field missing")
-
-    content_list = rpc_output["result"].get("content")
-    if not content_list or len(content_list) == 0:
-        raise ValueError("RPC output content list is empty")
-
-    content_text = content_list[0].get("text")
-    if not content_text:
-        raise ValueError("Missing 'text' field in content")
-
-    data = json.loads(content_text)
-
-    schema = data.get("schemaDescription", "")
-    raw_bank_txns = data.get("bankTransactions", [])
-
-    txn_fields = [
-        "transactionAmount",
-        "transactionNarration",
-        "transactionDate",
-        "transactionType",
-        "transactionMode",
-        "currentBalance"
-    ]
-
-    parsed_bank_transactions = []
-
-    for bank_record in raw_bank_txns:
-        bank_name = bank_record.get("bank", "Unknown Bank")
-        txns = bank_record.get("txns", [])
-
-        parsed_txns = []
-        for txn_arr in txns:
-            if len(txn_arr) != len(txn_fields):
-                continue
-
-            parsed_txn = dict(zip(txn_fields, txn_arr))
-
-            try:
-                parsed_txn["transactionAmount"] = float(parsed_txn["transactionAmount"])
-            except (ValueError, TypeError):
-                pass
-            try:
-                parsed_txn["currentBalance"] = float(parsed_txn["currentBalance"])
-            except (ValueError, TypeError):
-                pass
-
-            txn_type_map = {
-                1: "CREDIT",
-                2: "DEBIT",
-                3: "OPENING",
-                4: "INTEREST",
-                5: "TDS",
-                6: "INSTALLMENT",
-                7: "CLOSING",
-                8: "OTHERS"
-            }
-            try:
-                txn_type_int = int(parsed_txn["transactionType"])
-                parsed_txn["transactionType"] = txn_type_map.get(txn_type_int, "UNKNOWN")
-            except (ValueError, TypeError):
-                parsed_txn["transactionType"] = "UNKNOWN"
-
-            parsed_txns.append(parsed_txn)
-
-        parsed_bank_transactions.append({
-            "bank": bank_name,
-            "transactions": parsed_txns
-        })
-
-    return {
-        "schemaDescription": schema,
-        "bankTransactions": parsed_bank_transactions
-    }
-
 # --- Core Tool: The MCP Client ---
 # This single, powerful tool is the bridge to the entire Fi MCP server.
 def call_mcp_tool(
@@ -142,22 +60,6 @@ def call_mcp_tool(
 
         result = response.json()
 
-        # Update session ID after login if provided
-        if tool_name == "login" and response.status_code == 200:
-            if "result" in result and "mcp_session_id" in result["result"]:
-                tool_context.state["mcp_session_id"] = result["result"]["mcp_session_id"]
-
-        # Add parsing or special handling for new tool responses here if needed
-
-        # Example: If fetching bank transactions, parse output and return structured data
-        if tool_name == "fetch_bank_transactions" and "result" in result:
-            try:
-                parsed_data = parse_bank_transactions_rpc_output(result)
-                return {"parsedData": parsed_data}
-            except Exception as e:
-                print(f"Error parsing bank transactions: {e}")
-                return result
-
         # For other tools, just return the raw JSON response
         return result
 
@@ -184,7 +86,7 @@ financial_insights_agent = Agent(
     model=model_name,
     description="Analyzes financial data to provide insights on spending and savings.",
     instruction="""
-        You are a financial analyst. You will be given raw financial data
+        You are a financial analyst. You will first fetch raw net worth data using the 'fetch_bank_transactions' tool.
         (like bank transactions or net worth details). Your job is to:
         1. Analyze the data to find meaningful patterns (e.g., high spending categories, savings rate).
         2. Summarize the findings in a clear, easy-to-understand way.
@@ -217,8 +119,8 @@ net_worth_agent = Agent(
     model=model_name,
     description="Fetches user's net worth details from the MCP service.",
     instruction="""
-        You only fetch raw net worth data using the 'fetch_net_worth' tool.
-        Do not analyze or interpret this data, just return it as is.
+        You will first fetch raw net worth data using the 'fetch_net_worth' tool.
+        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly.
     """,
     tools=[call_mcp_tool]
 )
@@ -228,8 +130,8 @@ credit_report_agent = Agent(
     model=model_name,
     description="Fetches user's credit report data from the MCP service.",
     instruction="""
-        You only fetch raw credit report data using the 'fetch_credit_report' tool.
-        Do not analyze or interpret this data, just return it as is.
+        You will first fetch raw credit report data using the 'fetch_credit_report' tool.
+        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly.
     """,
     tools=[call_mcp_tool]
 )
@@ -239,8 +141,8 @@ epf_details_agent = Agent(
     model=model_name,
     description="Fetches user's Employee Provident Fund (EPF) details from the MCP service.",
     instruction="""
-        You only fetch raw EPF details using the 'fetch_epf_details' tool.
-        Do not analyze or interpret this data, just return it as is.
+        You will first fetch raw EPF details using the 'fetch_epf_details' tool.
+        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly in a tabular format.
     """,
     tools=[call_mcp_tool]
 )
@@ -250,8 +152,8 @@ mf_transactions_agent = Agent(
     model=model_name,
     description="Fetches user's mutual fund transaction data from the MCP service.",
     instruction="""
-        You only fetch raw mutual fund transactions using the 'fetch_mf_transactions' tool.
-        Do not analyze or interpret this data, just return it as is.
+        You first fetch raw mutual fund transactions using the 'fetch_mf_transactions' tool.
+        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly in a tabular format.
     """,
     tools=[call_mcp_tool]
 )
@@ -266,16 +168,11 @@ root_agent = Agent(
     instruction="""
         You are a friendly and professional AI Personal Financial Advisor.
 
-        1. **Login:** Start by asking the user for their 10-digit phone number to log in.
-           Use the 'data_analyst' agent to call the 'login' tool with the phone number.
-           The 'data_analyst' will automatically handle saving the session ID.
-           Confirm to the user that they are logged in.
-
-        2. **Understand Goal:** Ask the user what they'd like to do (e.g., "analyze my spending,"
+        1. **Understand Goal:** Ask the user what they'd like to do (e.g., "analyze my spending,"
            "check my net worth," "get investment advice", "get my credit report", "fetch my EPF details", 
            "show my mutual fund transactions").
 
-        3. **Delegate Tasks:**
+        2. **Delegate Tasks:**
            - To get any data, ALWAYS delegate to the appropriate data fetching agent first.
            - Use 'data_analyst' for raw financial transactional data. 
            - Use 'net_worth_agent' for net worth data.

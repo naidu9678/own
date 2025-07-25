@@ -70,33 +70,6 @@ def call_mcp_tool(
 
 # --- Specialist Sub-Agents ---
 
-data_analyst_agent = Agent(
-    name="data_analyst",
-    model=model_name,
-    description="Fetches raw financial data from the MCP service. It does not interpret data.",
-    instruction=prompt.DATA_ANALYST_PROMPT,
-    tools=[call_mcp_tool]
-)
-
-financial_insights_agent = Agent(
-    name="financial_insights_agent",
-    model=model_name,
-    description="Analyzes financial data to provide insights on spending and savings.",
-    instruction=prompt.FINANCIAL_INSIGHTS_PROMPT,
-)
-
-investment_advisor_agent = Agent(
-    name="investment_advisor_agent",
-    model=model_name,
-    description="Provides investment advice based on a user's financial profile.",
-    instruction=prompt.INVESTMENT_ADVISOR_PROMPT,
-)
-
-# Existing imports and code remain unchanged...
-# ...
-
-# --- Additional Specialist Sub-Agents ---
-
 net_worth_agent = Agent(
     name="net_worth_agent",
     model=model_name,
@@ -129,6 +102,36 @@ mf_transactions_agent = Agent(
     tools=[call_mcp_tool]
 )
 
+
+
+data_analyst_agent = Agent(
+    name="data_analyst",
+    model=model_name,
+    description="Fetches, parses, and formats financial data (like bank transactions) into a clean, readable summary. Use this to get any raw financial data you need.",
+    instruction=prompt.DATA_ANALYST_PROMPT,
+    # This agent still uses the core tool to talk to the server
+    tools=[call_mcp_tool]
+)
+
+financial_insights_agent = Agent(
+    name="financial_insights_agent",
+    model=model_name,
+    description="Analyzes a user's spending, income, and savings habits. It can get the data it needs and provide a full analysis.",
+    instruction=prompt.FINANCIAL_INSIGHTS_PROMPT,
+    
+)
+
+investment_advisor_agent = Agent(
+    name="investment_advisor_agent",
+    model=model_name,
+    description="Provides personalized investment advice after building a complete financial profile of the user.",
+    instruction=prompt.INVESTMENT_ADVISOR_PROMPT,
+)
+
+# Existing imports and code remain unchanged...
+# ...
+
+# --- Additional Specialist Sub-Agents ---
 
 # --- Modify the root_agent to include the new sub-agents ---
 

@@ -10,6 +10,7 @@ from google.adk import Agent
 from google.genai import types
 from typing import Optional, List, Dict
 from google.adk.tools.tool_context import ToolContext
+from . import prompt
 
 load_dotenv()
 model_name = os.getenv("MODEL")
@@ -73,11 +74,7 @@ data_analyst_agent = Agent(
     name="data_analyst",
     model=model_name,
     description="Fetches raw financial data from the MCP service. It does not interpret data.",
-    instruction="""
-        You are a data fetching agent. Your only job is to use the 'call_mcp_tool'
-        to get financial data from the MCP server. Do not analyze or comment on the data,
-        simply return the raw results from the tool call.
-        """,
+    instruction=prompt.DATA_ANALYST_PROMPT,
     tools=[call_mcp_tool]
 )
 
@@ -85,28 +82,14 @@ financial_insights_agent = Agent(
     name="financial_insights_agent",
     model=model_name,
     description="Analyzes financial data to provide insights on spending and savings.",
-    instruction="""
-        You are a financial analyst. You will first fetch raw net worth data using the 'fetch_bank_transactions' tool.
-        (like bank transactions or net worth details). Your job is to:
-        1. Analyze the data to find meaningful patterns (e.g., high spending categories, savings rate).
-        2. Summarize the findings in a clear, easy-to-understand way.
-        3. Present these insights to the user.
-        You do not have tools to fetch data yourself.
-        """,
+    instruction=prompt.FINANCIAL_INSIGHTS_PROMPT,
 )
 
 investment_advisor_agent = Agent(
     name="investment_advisor_agent",
     model=model_name,
     description="Provides investment advice based on a user's financial profile.",
-    instruction="""
-        You are an investment advisor. You will be given a user's financial profile,
-        including their net worth, existing investments, and savings habits. Your job is to:
-        1. Evaluate their current investment portfolio (e.g., asset allocation, performance).
-        2. Provide personalized, actionable investment suggestions based on their profile.
-        3. Explain the reasoning behind your suggestions.
-        You do not have access to real-time market data or tools to fetch data.
-        """,
+    instruction=prompt.INVESTMENT_ADVISOR_PROMPT,
 )
 
 # Existing imports and code remain unchanged...
@@ -118,10 +101,7 @@ net_worth_agent = Agent(
     name="net_worth_agent",
     model=model_name,
     description="Fetches user's net worth details from the MCP service.",
-    instruction="""
-        You will first fetch raw net worth data using the 'fetch_net_worth' tool.
-        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly.
-    """,
+    instruction=prompt.NET_WORTH_PROMPT,
     tools=[call_mcp_tool]
 )
 
@@ -129,10 +109,7 @@ credit_report_agent = Agent(
     name="credit_report_agent",
     model=model_name,
     description="Fetches user's credit report data from the MCP service.",
-    instruction="""
-        You will first fetch raw credit report data using the 'fetch_credit_report' tool.
-        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly.
-    """,
+    instruction=prompt.CREDIT_REPORT_PROMPT ,
     tools=[call_mcp_tool]
 )
 
@@ -140,10 +117,7 @@ epf_details_agent = Agent(
     name="epf_details_agent",
     model=model_name,
     description="Fetches user's Employee Provident Fund (EPF) details from the MCP service.",
-    instruction="""
-        You will first fetch raw EPF details using the 'fetch_epf_details' tool.
-        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly in a tabular format.
-    """,
+    instruction=prompt.EPF_DETAILS_PROMPT,
     tools=[call_mcp_tool]
 )
 
@@ -151,10 +125,7 @@ mf_transactions_agent = Agent(
     name="mf_transactions_agent",
     model=model_name,
     description="Fetches user's mutual fund transaction data from the MCP service.",
-    instruction="""
-        You first fetch raw mutual fund transactions using the 'fetch_mf_transactions' tool.
-        Your task is to parse the JSON data from the string, extract the relevant fields, and then analyze or summarize it accordingly in a tabular format.
-    """,
+    instruction=prompt.MF_TRANSACTIONS_PROMPT,
     tools=[call_mcp_tool]
 )
 
@@ -165,25 +136,7 @@ root_agent = Agent(
     name="financial_advisor",
     model=model_name,
     description="The main financial advisor that interacts with the user and delegates tasks.",
-    instruction="""
-        You are a friendly and professional AI Personal Financial Advisor.
-
-        1. **Understand Goal:** Ask the user what they'd like to do (e.g., "analyze my spending,"
-           "check my net worth," "get investment advice", "get my credit report", "fetch my EPF details", 
-           "show my mutual fund transactions").
-
-        2. **Delegate Tasks:**
-           - To get any data, ALWAYS delegate to the appropriate data fetching agent first.
-           - Use 'data_analyst' for raw financial transactional data. 
-           - Use 'net_worth_agent' for net worth data.
-           - Use 'credit_report_agent' for credit report.
-           - Use 'epf_details_agent' for EPF details.
-           - Use 'mf_transactions_agent' for mutual fund transactions.
-           - For spending analysis, give the data from 'data_analyst' to the 'financial_insights_agent'.
-           - For investment advice, give the data from 'data_analyst' or 'mf_transactions_agent' to the 'investment_advisor_agent'.
-           - For credit report, EPF, and net worth, you may summarize or pass data back directly or use additional specialists if needed.
-           - Present the final analysis or data from the specialist agents to the user.
-    """,
+    instruction=prompt.FINANCIAL_ADVISOR_PROMPT             ,
     generate_content_config=types.GenerateContentConfig(
         temperature=0,
     ),
